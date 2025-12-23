@@ -1,0 +1,388 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="px-4 py-6 sm:px-0">
+    <div class="bg-white shadow rounded-lg p-6">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Qdrant Vector Database Browser</h2>
+        
+        <!-- Statistics Section -->
+        <div id="statsSection" class="mb-6 p-4 bg-gray-50 rounded-lg">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Collection Statistics</h3>
+            <div id="statsContent" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-blue-600" id="totalPoints">-</div>
+                    <div class="text-sm text-gray-600">Total Vectors</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-blue-600" id="totalDocs">-</div>
+                    <div class="text-sm text-gray-600">Documents</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-blue-600" id="vectorSize">-</div>
+                    <div class="text-sm text-gray-600">Vector Size</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-blue-600" id="avgChunks">-</div>
+                    <div class="text-sm text-gray-600">Avg Chunks/Doc</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Filters Section -->
+        <div class="mb-6 p-4 bg-gray-50 rounded-lg">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Filters</h3>
+            <div class="flex gap-4 items-end">
+                <div class="flex-1">
+                    <label for="docFilter" class="block text-sm font-medium text-gray-700 mb-2">
+                        Filter by Document
+                    </label>
+                    <select 
+                        id="docFilter" 
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                    >
+                        <option value="">All Documents</option>
+                        <!-- Documents will be loaded here -->
+                    </select>
+                </div>
+                <div class="flex-1">
+                    <label for="docIdFilter" class="block text-sm font-medium text-gray-700 mb-2">
+                        Or enter Document ID manually
+                    </label>
+                    <input 
+                        type="text" 
+                        id="docIdFilter" 
+                        placeholder="Enter document ID..."
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                    >
+                </div>
+                <div>
+                    <label for="limitFilter" class="block text-sm font-medium text-gray-700 mb-2">
+                        Limit
+                    </label>
+                    <select 
+                        id="limitFilter"
+                        class="mt-1 block rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                    >
+                        <option value="10">10</option>
+                        <option value="20" selected>20</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <button 
+                    id="loadPointsBtn"
+                    class="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                >
+                    Load Points
+                </button>
+                <button 
+                    id="refreshStatsBtn"
+                    class="bg-gray-600 text-white py-2 px-4 rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
+                >
+                    Refresh Stats
+                </button>
+            </div>
+        </div>
+        
+        <!-- Points Table -->
+        <div class="mb-4">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Vectors/Points</h3>
+            <div id="loading" class="hidden text-center py-8">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <p class="mt-2 text-gray-600">Loading...</p>
+            </div>
+            <div id="pointsTable" class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Document</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chunk Index</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Text Preview</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pointsBody" class="bg-white divide-y divide-gray-200">
+                        <tr>
+                            <td colspan="6" class="px-6 py-4 text-center text-gray-500">
+                                Click "Load Points" to view vectors
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="pagination" class="mt-4 flex justify-between items-center hidden">
+                <button 
+                    id="prevBtn"
+                    class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled
+                >
+                    Previous
+                </button>
+                <span id="pageInfo" class="text-sm text-gray-600"></span>
+                <button 
+                    id="nextBtn"
+                    class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled
+                >
+                    Next
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Point Detail Modal -->
+<div id="pointModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+    <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-1/2 shadow-lg rounded-md bg-white">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-bold text-gray-900">Point Details</h3>
+            <button id="closeModal" class="text-gray-400 hover:text-gray-600">
+                <span class="text-2xl">&times;</span>
+            </button>
+        </div>
+        <div id="modalContent" class="overflow-y-auto max-h-96">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
+<script>
+let currentOffset = 0;
+let currentLimit = 20;
+let hasMore = false;
+
+// Load statistics
+async function loadStats() {
+    try {
+        const response = await fetch('/api/qdrant/stats');
+        const data = await response.json();
+        
+        document.getElementById('totalPoints').textContent = data.total_points.toLocaleString();
+        document.getElementById('totalDocs').textContent = data.total_documents;
+        document.getElementById('vectorSize').textContent = data.vector_size;
+        document.getElementById('avgChunks').textContent = data.average_chunks_per_doc;
+    } catch (error) {
+        console.error('Error loading stats:', error);
+    }
+}
+
+// Load points
+async function loadPoints(offset = 0, limit = 20, docId = null) {
+    const loadingDiv = document.getElementById('loading');
+    const pointsBody = document.getElementById('pointsBody');
+    const pagination = document.getElementById('pagination');
+    
+    loadingDiv.classList.remove('hidden');
+    pointsBody.innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center">Loading...</td></tr>';
+    
+    try {
+        let url = `/api/qdrant/points?limit=${limit}&offset=${offset}`;
+        if (docId) {
+            url += `&doc_id=${docId}`;
+        }
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        currentOffset = offset;
+        currentLimit = limit;
+        hasMore = data.has_more;
+        
+        if (data.points.length === 0) {
+            let message = '<tr><td colspan="6" class="px-6 py-4 text-center text-gray-500">No points found</td></tr>';
+            if (data.warning) {
+                message = `<tr><td colspan="6" class="px-6 py-4 text-center">
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-md p-4">
+                        <p class="text-yellow-800 font-medium">⚠️ ${data.warning}</p>
+                        <p class="text-yellow-700 text-sm mt-2">Go to <a href="/" class="underline">Upload</a> page to re-upload documents.</p>
+                    </div>
+                </td></tr>`;
+            }
+            pointsBody.innerHTML = message;
+        } else {
+            pointsBody.innerHTML = data.points.map(point => `
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">${point.id.substring(0, 20)}...</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${point.document_name || 'N/A'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${point.chunk_index}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${point.token_count}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">${point.chunk_text_preview}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <button 
+                            onclick="showPointDetails('${point.id}')"
+                            class="text-blue-600 hover:text-blue-900"
+                        >
+                            View
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+        
+        // Update pagination
+        if (data.points.length > 0 || offset > 0) {
+            pagination.classList.remove('hidden');
+            document.getElementById('prevBtn').disabled = offset === 0;
+            document.getElementById('nextBtn').disabled = !hasMore;
+            document.getElementById('pageInfo').textContent = 
+                `Showing ${offset + 1}-${offset + data.points.length} of ${data.total || '?'}`;
+        } else {
+            pagination.classList.add('hidden');
+        }
+        
+    } catch (error) {
+        console.error('Error loading points:', error);
+        pointsBody.innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center text-red-500">Error loading points</td></tr>';
+    } finally {
+        loadingDiv.classList.add('hidden');
+    }
+}
+
+// Show point details
+async function showPointDetails(pointId) {
+    const modal = document.getElementById('pointModal');
+    const content = document.getElementById('modalContent');
+    
+    modal.classList.remove('hidden');
+    content.innerHTML = '<div class="text-center py-8">Loading...</div>';
+    
+    try {
+        const response = await fetch(`/api/qdrant/points/${pointId}`);
+        const point = await response.json();
+        
+        content.innerHTML = `
+            <div class="space-y-4">
+                <div>
+                    <h4 class="font-semibold text-gray-900">Point ID</h4>
+                    <p class="text-sm text-gray-600 font-mono">${point.id}</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-gray-900">Vector</h4>
+                    <p class="text-sm text-gray-600">Dimensions: ${point.vector_dimensions}</p>
+                    <p class="text-xs text-gray-500 font-mono mt-1">Preview: [${point.vector_preview.join(', ')}...]</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold text-gray-900">Payload</h4>
+                    <div class="mt-2 space-y-2 text-sm">
+                        <div><span class="font-medium">Document ID:</span> <span class="text-gray-600">${point.payload.doc_id || 'N/A'}</span></div>
+                        <div><span class="font-medium">Name:</span> <span class="text-gray-600">${point.payload.name || 'N/A'}</span></div>
+                        <div><span class="font-medium">Content Type:</span> <span class="text-gray-600">${point.payload.content_type || 'N/A'}</span></div>
+                        <div><span class="font-medium">Chunk Index:</span> <span class="text-gray-600">${point.payload.chunk_index}</span></div>
+                        <div><span class="font-medium">Token Count:</span> <span class="text-gray-600">${point.payload.token_count}</span></div>
+                        <div><span class="font-medium">Created At:</span> <span class="text-gray-600">${point.payload.created_at || 'N/A'}</span></div>
+                        <div class="mt-4">
+                            <span class="font-medium">Chunk Text:</span>
+                            <div class="mt-2 p-3 bg-gray-50 rounded border text-gray-700 max-h-48 overflow-y-auto">
+                                ${point.payload.chunk_text || 'N/A'}
+                            </div>
+                        </div>
+                        ${point.payload.metadata_json ? `
+                        <div class="mt-4">
+                            <span class="font-medium">Metadata:</span>
+                            <div class="mt-2 p-3 bg-gray-50 rounded border text-gray-700 max-h-32 overflow-y-auto">
+                                <pre class="text-xs">${JSON.stringify(JSON.parse(point.payload.metadata_json), null, 2)}</pre>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    } catch (error) {
+        console.error('Error loading point details:', error);
+        content.innerHTML = '<div class="text-center text-red-500 py-8">Error loading point details</div>';
+    }
+}
+
+// Load documents list
+async function loadDocuments() {
+    try {
+        const response = await fetch('/api/documents');
+        const data = await response.json();
+        const docFilter = document.getElementById('docFilter');
+        
+        // Clear existing options except "All Documents"
+        docFilter.innerHTML = '<option value="">All Documents</option>';
+        
+        // Add documents
+        data.documents.forEach(doc => {
+            const option = document.createElement('option');
+            option.value = doc.id;
+            option.textContent = `${doc.name} (${doc.chunk_count} chunks, ${doc.total_tokens} tokens)`;
+            docFilter.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading documents:', error);
+    }
+}
+
+// Get selected document ID
+function getSelectedDocId() {
+    const docFilter = document.getElementById('docFilter').value;
+    const docIdFilter = document.getElementById('docIdFilter').value.trim();
+    
+    // Manual ID filter takes precedence
+    if (docIdFilter) {
+        return docIdFilter;
+    }
+    
+    return docFilter || null;
+}
+
+// Event listeners
+document.getElementById('loadPointsBtn').addEventListener('click', () => {
+    const docId = getSelectedDocId();
+    const limit = parseInt(document.getElementById('limitFilter').value);
+    loadPoints(0, limit, docId);
+});
+
+// Sync document filter with manual ID input
+document.getElementById('docFilter').addEventListener('change', (e) => {
+    if (e.target.value) {
+        document.getElementById('docIdFilter').value = '';
+    }
+});
+
+document.getElementById('docIdFilter').addEventListener('input', (e) => {
+    if (e.target.value.trim()) {
+        document.getElementById('docFilter').value = '';
+    }
+});
+
+document.getElementById('refreshStatsBtn').addEventListener('click', loadStats);
+
+document.getElementById('prevBtn').addEventListener('click', () => {
+    if (currentOffset > 0) {
+        const newOffset = Math.max(0, currentOffset - currentLimit);
+        const docId = getSelectedDocId();
+        loadPoints(newOffset, currentLimit, docId);
+    }
+});
+
+document.getElementById('nextBtn').addEventListener('click', () => {
+    if (hasMore) {
+        const newOffset = currentOffset + currentLimit;
+        const docId = getSelectedDocId();
+        loadPoints(newOffset, currentLimit, docId);
+    }
+});
+
+document.getElementById('closeModal').addEventListener('click', () => {
+    document.getElementById('pointModal').classList.add('hidden');
+});
+
+// Close modal on outside click
+document.getElementById('pointModal').addEventListener('click', (e) => {
+    if (e.target.id === 'pointModal') {
+        document.getElementById('pointModal').classList.add('hidden');
+    }
+});
+
+// Load stats and documents on page load
+loadStats();
+loadDocuments();
+</script>
+{% endblock %}
+

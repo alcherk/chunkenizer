@@ -1,9 +1,11 @@
 """API route handlers."""
 import logging
 import traceback
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel
@@ -170,7 +172,10 @@ async def upload_document(
                 "created_at": datetime.utcnow().isoformat()
             }
             payloads.append(payload)
-            ids.append(f"{doc.id}_{chunk['chunk_index']}")
+            # Generate UUID for each point (Qdrant requires valid UUID or integer)
+            # We can't use {doc_id}_{chunk_index} format as it's not a valid UUID
+            point_id = str(uuid.uuid4())
+            ids.append(point_id)
         
         # Store vectors in Qdrant
         logger.info(f"Storing {len(vectors)} vectors in Qdrant")
@@ -321,5 +326,200 @@ async def delete_document(doc_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error deleting document {doc_id}: {e}", exc_info=True)
         logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/qdrant/stats")
+async def get_qdrant_stats(db: Session = Depends(get_db)):
+    """Get Qdrant collection statistics."""
+    logger.info("Qdrant stats requested")
+    
+    try:
+        vectorstore = get_vectorstore()
+        
+        # Get point count
+        count_result = vectorstore.client.count(vectorstore.collection_name)
+        total_points = count_result.count
+        
+        # Get document count from SQLite
+        doc_count = db.query(Document).count()
+        
+        # Try to get collection info via HTTP API
+        vector_size = 384
+        distance = "COSINE"
+        try:
+            import requests
+            response = requests.get(
+                f"http://{settings.qdrant_host}:{settings.qdrant_port}/collections/{vectorstore.collection_name}",
+                timeout=5
+            )
+            if response.status_code == 200:
+                data = response.json().get('result', {})
+                if 'config' in data:
+                    params = data['config'].get('params', {})
+                    vectors_config = params.get('vectors', {})
+                    if isinstance(vectors_config, dict):
+                        vector_size = vectors_config.get('size', 384)
+                        distance = vectors_config.get('distance', 'COSINE')
+        except:
+            pass
+        
+        return {
+            "collection_name": vectorstore.collection_name,
+            "total_points": total_points,
+            "total_documents": doc_count,
+            "vector_size": vector_size,
+            "distance_metric": distance,
+            "average_chunks_per_doc": round(total_points / doc_count, 2) if doc_count > 0 else 0
+        }
+    except Exception as e:
+        logger.error(f"Error getting Qdrant stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/qdrant/points")
+async def get_qdrant_points(
+    limit: int = 20,
+    offset: int = 0,
+    doc_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get points from Qdrant collection."""
+    logger.info(f"Qdrant points requested: limit={limit}, offset={offset}, doc_id={doc_id}")
+    
+    try:
+        vectorstore = get_vectorstore()
+        
+        # Build filter if doc_id provided
+        scroll_filter = None
+        if doc_id:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            scroll_filter = Filter(
+                must=[
+                    FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
+                ]
+            )
+        
+        # Scroll to get points
+        # Note: Qdrant scroll uses offset as point ID for pagination, not integer offset
+        # For initial load, use None. For subsequent pages, use the last point ID from previous result
+        scroll_offset = None
+        
+        # If offset is provided and it's not a doc_id filter, try to use it as point ID
+        # For now, we'll use simple scrolling without offset-based pagination
+        # Instead, we'll use limit-based pagination which is simpler
+        
+        scroll_result = vectorstore.client.scroll(
+            collection_name=vectorstore.collection_name,
+            scroll_filter=scroll_filter,
+            limit=limit,
+            offset=scroll_offset,  # Use None for first page, point ID for next pages
+            with_payload=True,
+            with_vectors=False  # Don't return full vectors (too large)
+        )
+        
+        points = scroll_result[0]
+        # Qdrant returns (points, next_page_offset) tuple
+        # next_page_offset is either None or a point ID to use for next page
+        next_offset = scroll_result[1] if len(scroll_result) > 1 else None
+        
+        # Check for data mismatch
+        db_doc_count = db.query(Document).count()
+        total_db_chunks = db.query(func.sum(Document.chunk_count)).scalar() or 0
+        
+        if len(points) == 0 and total_db_chunks > 0:
+            logger.warning(
+                f"Qdrant has 0 points but database shows {db_doc_count} documents "
+                f"with {total_db_chunks} total chunks. Vectors may not have been stored."
+            )
+        
+        formatted_points = []
+        for point in points:
+            payload = point.payload
+            formatted_points.append({
+                "id": str(point.id),
+                "doc_id": payload.get("doc_id"),
+                "document_name": payload.get("name"),
+                "chunk_index": payload.get("chunk_index"),
+                "token_count": payload.get("token_count", 0),
+                "chunk_text_preview": payload.get("chunk_text", "")[:200] + "..." if len(payload.get("chunk_text", "")) > 200 else payload.get("chunk_text", ""),
+                "created_at": payload.get("created_at")
+            })
+        
+        response = {
+            "points": formatted_points,
+            "total": len(formatted_points),
+            "next_offset": next_offset,
+            "has_more": next_offset is not None
+        }
+        
+        # Add warning if there's a mismatch
+        if len(points) == 0 and total_db_chunks > 0:
+            response["warning"] = (
+                f"No vectors found in Qdrant, but database has {db_doc_count} documents "
+                f"with {total_db_chunks} chunks. Please re-upload documents to populate vectors."
+            )
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error getting Qdrant points: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/qdrant/points/{point_id}")
+async def get_qdrant_point(point_id: str, db: Session = Depends(get_db)):
+    """Get a specific point from Qdrant."""
+    logger.info(f"Qdrant point requested: {point_id}")
+    
+    try:
+        vectorstore = get_vectorstore()
+        
+        # Retrieve point by ID
+        result = vectorstore.client.retrieve(
+            collection_name=vectorstore.collection_name,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=True
+        )
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Point not found")
+        
+        point = result[0]
+        payload = point.payload
+        
+        # Handle vector - it might be a list or numpy array
+        vector_preview = []
+        if point.vector:
+            if hasattr(point.vector, 'tolist'):
+                # It's a numpy array
+                vector_preview = point.vector[:10].tolist()
+            elif isinstance(point.vector, list):
+                # It's already a list
+                vector_preview = point.vector[:10]
+            else:
+                # Try to convert to list
+                vector_preview = list(point.vector[:10])
+        
+        return {
+            "id": str(point.id),
+            "vector_dimensions": len(point.vector) if point.vector else 0,
+            "vector_preview": vector_preview,  # First 10 dimensions
+            "payload": {
+                "doc_id": payload.get("doc_id"),
+                "name": payload.get("name"),
+                "content_type": payload.get("content_type"),
+                "sha256": payload.get("sha256"),
+                "chunk_index": payload.get("chunk_index"),
+                "token_count": payload.get("token_count", 0),
+                "chunk_text": payload.get("chunk_text", ""),
+                "metadata_json": payload.get("metadata_json"),
+                "created_at": payload.get("created_at")
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting Qdrant point {point_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

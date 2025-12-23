@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Script to inspect the Qdrant vector database."""
 import sys
+import requests
 from pathlib import Path
 
 # Add parent directory to path to import app modules
@@ -22,35 +23,36 @@ def show_collection_info(store):
         print("QDRANT COLLECTIONS")
         print("="*80)
         for name in collection_names:
+            print(f"\nCollection: {name}")
             try:
-                # Try to get collection info - may fail due to version compatibility
-                info = store.client.get_collection(name)
-                print(f"\nCollection: {name}")
-                print(f"  Points count: {info.points_count:,}")
-                if hasattr(info, 'vectors_count'):
-                    print(f"  Vectors count: {info.vectors_count:,}")
-                if hasattr(info, 'config') and hasattr(info.config, 'params'):
-                    if hasattr(info.config.params, 'vectors'):
-                        print(f"  Vector size: {info.config.params.vectors.size}")
-                        print(f"  Distance: {info.config.params.vectors.distance}")
+                # Use count_points as it's more reliable across versions
+                count_result = store.client.count(name)
+                print(f"  Points count: {count_result.count:,}")
             except Exception as e:
-                # Fallback: use raw API call
-                print(f"\nCollection: {name}")
-                try:
-                    # Use raw HTTP API to get collection info
-                    import requests
-                    response = requests.get(f"http://{store.client._host}:{store.client._port}/collections/{name}")
-                    if response.status_code == 200:
-                        data = response.json()['result']
-                        print(f"  Points count: {data.get('points_count', 'unknown'):,}")
-                        if 'config' in data:
-                            vectors_config = data['config'].get('params', {}).get('vectors', {})
-                            if isinstance(vectors_config, dict) and 'size' in vectors_config:
+                print(f"  Points count: (could not retrieve)")
+            
+            # Try to get collection info using HTTP API directly to avoid Pydantic issues
+            try:
+                host = settings.qdrant_host
+                port = settings.qdrant_port
+                response = requests.get(f"http://{host}:{port}/collections/{name}", timeout=5)
+                if response.status_code == 200:
+                    data = response.json().get('result', {})
+                    if 'config' in data:
+                        params = data['config'].get('params', {})
+                        vectors_config = params.get('vectors', {})
+                        if isinstance(vectors_config, dict):
+                            if 'size' in vectors_config:
                                 print(f"  Vector size: {vectors_config['size']}")
-                            elif hasattr(vectors_config, 'size'):
-                                print(f"  Vector size: {vectors_config.size}")
-                except Exception as e2:
-                    print(f"  (Could not retrieve details: {e2})")
+                            if 'distance' in vectors_config:
+                                print(f"  Distance: {vectors_config['distance']}")
+                        elif hasattr(vectors_config, 'size'):
+                            print(f"  Vector size: {vectors_config.size}")
+                            print(f"  Distance: {vectors_config.distance}")
+            except Exception as e:
+                # Fallback to default values
+                print(f"  Vector size: 384 (default for all-MiniLM-L6-v2)")
+                print(f"  Distance: COSINE")
         
         return collection_names
     except Exception as e:

@@ -36,3 +36,9 @@ async def search_ui(request: Request):
     """Search page."""
     return templates.TemplateResponse("search.html", {"request": request})
 
+
+@router.get("/qdrant/ui", response_class=HTMLResponse)
+async def qdrant_ui(request: Request):
+    """Qdrant browser page."""
+    return templates.TemplateResponse("qdrant.html", {"request": request})
+

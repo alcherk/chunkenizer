@@ -44,3 +44,4 @@ def setup_logging(log_level: Optional[str] = None) -> logging.Logger:
 # Create module-level logger
 logger = setup_logging()
 
+
