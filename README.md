@@ -728,6 +728,216 @@ Chunkenizer/
 └── requirements.txt
 ```
 
+## Database Inspection
+
+### Architecture Overview
+
+**Important**: The system uses two separate databases:
+
+1. **SQLite** (`data/chunkenizer.db`) - Stores document **metadata only**:
+   - Document names, content types, SHA256 hashes
+   - Chunk counts, token counts
+   - Creation/update timestamps
+   - Custom metadata JSON
+   - **Does NOT store embeddings/vectors**
+
+2. **Qdrant** (Vector Database) - Stores **embeddings/vectors**:
+   - Vector embeddings for each chunk (384 dimensions)
+   - Chunk text and metadata
+   - Document IDs and chunk indices
+   - **This is where the actual embeddings live**
+
+### Inspecting SQLite (Metadata)
+
+The SQLite database stores document metadata. Here are several ways to inspect it:
+
+### Method 1: Using the Inspection Script (Recommended)
+
+A Python script is provided for easy database inspection:
+
+```bash
+# Activate virtual environment first
+source venv/bin/activate
+
+# Run the inspection script
+python scripts/inspect_db.py
+```
+
+This script will:
+- Show database schema
+- Display statistics (total documents, chunks, tokens)
+- Show all documents in a formatted table
+- Provide an interactive SQL prompt for custom queries
+
+### Method 2: Using SQLite Command Line
+
+```bash
+# Connect to the database
+sqlite3 data/chunkenizer.db
+
+# Useful SQLite commands:
+.tables                    # List all tables
+.schema documents          # Show table schema
+SELECT * FROM documents;   # View all documents
+.headers on               # Show column headers
+.mode column              # Format output as columns
+.quit                     # Exit
+```
+
+**Example Queries**:
+```sql
+-- Count documents
+SELECT COUNT(*) FROM documents;
+
+-- View document details
+SELECT name, chunk_count, total_tokens, created_at FROM documents;
+
+-- Find documents by name
+SELECT * FROM documents WHERE name LIKE '%test%';
+
+-- Documents with most chunks
+SELECT name, chunk_count FROM documents ORDER BY chunk_count DESC LIMIT 10;
+
+-- Total tokens across all documents
+SELECT SUM(total_tokens) as total_tokens FROM documents;
+```
+
+### Method 3: Using Python Interactively
+
+```python
+from app.db.database import SessionLocal
+from app.db.models import Document
+
+db = SessionLocal()
+documents = db.query(Document).all()
+
+for doc in documents:
+    print(f"{doc.name}: {doc.chunk_count} chunks, {doc.total_tokens} tokens")
+```
+
+### Method 4: Using Database GUI Tools
+
+**DB Browser for SQLite** (Cross-platform):
+- Download: https://sqlitebrowser.org/
+- Open `data/chunkenizer.db`
+
+**VS Code Extension**:
+- Install "SQLite Viewer" extension
+- Right-click `data/chunkenizer.db` → "Open Database"
+
+**DBeaver** (Cross-platform):
+- Download: https://dbeaver.io/
+- Create new SQLite connection
+- Point to `data/chunkenizer.db`
+
+### Inspecting Qdrant (Embeddings/Vectors)
+
+**The embeddings are stored in Qdrant, not SQLite!** Use the Qdrant inspection script:
+
+```bash
+# Activate virtual environment first
+source venv/bin/activate
+
+# Run the Qdrant inspection script
+python scripts/inspect_qdrant.py
+
+# Or use the Makefile shortcut
+make inspect-qdrant
+```
+
+This script will:
+- Show collection information (vector count, dimensions)
+- Display sample vectors/chunks
+- Show vectors for a specific document
+- Perform example searches
+- Show statistics
+
+**Alternative: Qdrant Web UI**
+
+Qdrant provides a web interface:
+
+```bash
+# If running locally
+open http://localhost:6333/dashboard
+
+# If running in Docker
+docker exec -it qdrant qdrant-web
+```
+
+**Using Qdrant Python Client Directly**:
+
+```python
+from app.vectorstore.qdrant_client import QdrantStore
+
+store = QdrantStore()
+
+# Get collection info
+info = store.client.get_collection(store.collection_name)
+print(f"Total vectors: {info.points_count}")
+
+# Scroll through vectors
+from qdrant_client.models import ScrollRequest
+result = store.client.scroll(
+    collection_name=store.collection_name,
+    limit=10,
+    with_payload=True,
+    with_vectors=True  # Include actual vectors
+)
+
+for point in result[0]:
+    print(f"ID: {point.id}")
+    print(f"Vector dimensions: {len(point.vector)}")
+    print(f"Payload: {point.payload}")
+```
+
+### Database Schema
+
+#### SQLite (`documents` table)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | String (UUID) | Primary key |
+| `name` | String | Document filename |
+| `content_type` | String | MIME type (text/plain, etc.) |
+| `sha256` | String | SHA256 hash (unique) |
+| `created_at` | DateTime | Creation timestamp |
+| `updated_at` | DateTime | Last update timestamp |
+| `status` | String | Document status (usually "ingested") |
+| `metadata_json` | Text | Custom metadata as JSON string |
+| `chunk_count` | Integer | Number of chunks created |
+| `total_tokens` | Integer | Total tokens across all chunks |
+
+**Note**: This table does NOT contain embeddings - only metadata!
+
+#### Qdrant Collection (`documents`)
+
+Each point in Qdrant contains:
+
+- **Vector**: 384-dimensional embedding (float array)
+- **Payload**:
+  - `doc_id`: Document UUID (links to SQLite)
+  - `name`: Document filename
+  - `content_type`: MIME type
+  - `sha256`: Document hash
+  - `chunk_index`: Index of chunk within document
+  - `token_count`: Number of tokens in chunk
+  - `chunk_text`: The actual chunk text
+  - `metadata_json`: Custom metadata
+  - `created_at`: Creation timestamp
+
+### Database Locations
+
+**SQLite**:
+- **Default**: `./data/chunkenizer.db`
+- **Docker**: `/app/data/chunkenizer.db` (mounted to `./data/` on host)
+- **Configurable**: Set `SQLITE_PATH` in `.env`
+
+**Qdrant**:
+- **Default**: `localhost:6333` (or `qdrant:6333` in Docker)
+- **Storage**: Docker volume `qdrant_storage` (persistent)
+- **Web UI**: http://localhost:6333/dashboard
+- **Configurable**: Set `QDRANT_HOST` and `QDRANT_PORT` in `.env`
+
 ## Troubleshooting
 
 ### Qdrant Connection Issues
@@ -743,6 +953,7 @@ Chunkenizer/
 ### Database Issues
 - Ensure `data/` directory exists and is writable
 - Check SQLite file permissions
+- Use `scripts/inspect_db.py` to verify database integrity
 
 ## License
 

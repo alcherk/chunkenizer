@@ -1,13 +1,15 @@
-.PHONY: help build up down logs test clean
+.PHONY: help build up down logs test clean inspect-db inspect-qdrant
 
 help:
 	@echo "Available commands:"
-	@echo "  make build    - Build Docker images"
-	@echo "  make up       - Start services"
-	@echo "  make down     - Stop services"
-	@echo "  make logs     - View logs"
-	@echo "  make test     - Run tests"
-	@echo "  make clean    - Clean up volumes and data"
+	@echo "  make build         - Build Docker images"
+	@echo "  make up            - Start services"
+	@echo "  make down          - Stop services"
+	@echo "  make logs          - View logs"
+	@echo "  make test          - Run tests"
+	@echo "  make clean         - Clean up volumes and data"
+	@echo "  make inspect-db    - Inspect SQLite database (metadata)"
+	@echo "  make inspect-qdrant - Inspect Qdrant database (embeddings)"
 
 build:
 	docker-compose build
@@ -27,4 +29,10 @@ test:
 clean:
 	docker-compose down -v
 	rm -rf data/ qdrant_storage/
+
+inspect-db:
+	python scripts/inspect_db.py
+
+inspect-qdrant:
+	python scripts/inspect_qdrant.py
 

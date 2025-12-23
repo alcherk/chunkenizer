@@ -48,17 +48,23 @@
             
             <button 
                 type="submit" 
-                class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                id="uploadButton"
+                class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-                Upload
+                <span id="uploadButtonText">Upload</span>
             </button>
         </form>
         
         <div id="message" class="mt-4 hidden"></div>
-        <div id="progress" class="mt-4 hidden">
-            <div class="bg-gray-200 rounded-full h-2.5">
-                <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+        <div id="progressContainer" class="mt-4 hidden">
+            <div class="mb-2 flex justify-between items-center">
+                <span id="progressStatus" class="text-sm font-medium text-gray-700">Processing...</span>
+                <span id="progressPercent" class="text-sm text-gray-500">0%</span>
             </div>
+            <div class="bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div id="progressBar" class="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out" style="width: 0%"></div>
+            </div>
+            <div id="progressDetails" class="mt-2 text-xs text-gray-500"></div>
         </div>
     </div>
 </div>
@@ -69,19 +75,30 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     
     const formData = new FormData(e.target);
     const messageDiv = document.getElementById('message');
-    const progressDiv = document.getElementById('progress');
+    const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar');
+    const progressStatus = document.getElementById('progressStatus');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressDetails = document.getElementById('progressDetails');
+    const uploadButton = document.getElementById('uploadButton');
+    const uploadButtonText = document.getElementById('uploadButtonText');
     
+    // Disable button and show progress
+    uploadButton.disabled = true;
+    uploadButtonText.textContent = 'Processing...';
     messageDiv.classList.add('hidden');
-    progressDiv.classList.remove('hidden');
+    progressContainer.classList.remove('hidden');
     progressBar.style.width = '0%';
+    progressPercent.textContent = '0%';
     
     try {
         const files = document.getElementById('file').files;
-        let uploaded = 0;
         const total = files.length;
+        let uploaded = 0;
+        let currentFileIndex = 0;
         
         for (let file of files) {
+            currentFileIndex++;
             const fileFormData = new FormData();
             fileFormData.append('file', file);
             if (formData.get('metadata_json')) {
@@ -91,33 +108,147 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
                 fileFormData.append('force_reindex', 'true');
             }
             
-            const response = await fetch('/documents', {
-                method: 'POST',
-                body: fileFormData
+            // Update status for current file
+            progressStatus.textContent = `Uploading ${file.name}...`;
+            progressDetails.textContent = `File ${currentFileIndex} of ${total}`;
+            
+            // Calculate base progress (upload phase: 0-30%)
+            const baseProgress = (uploaded / total) * 100;
+            progressBar.style.width = `${baseProgress}%`;
+            progressPercent.textContent = `${Math.round(baseProgress)}%`;
+            
+            // Upload with progress tracking
+            await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                let processingInterval = null;
+                const startTime = Date.now();
+                
+                // Track upload progress (0-20% of file processing)
+                xhr.upload.addEventListener('progress', (event) => {
+                    if (event.lengthComputable && processingInterval === null) {
+                        const uploadProgress = (event.loaded / event.total) * 20; // Upload is 20% of processing
+                        const totalProgress = baseProgress + (uploadProgress / total);
+                        progressBar.style.width = `${totalProgress}%`;
+                        progressPercent.textContent = `${Math.round(totalProgress)}%`;
+                    }
+                });
+                
+                xhr.addEventListener('loadstart', () => {
+                    progressStatus.textContent = `Uploading ${file.name}...`;
+                });
+                
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        // Upload complete, now processing (20-100%)
+                        progressStatus.textContent = `Processing ${file.name}...`;
+                        progressDetails.textContent = `Extracting text, chunking, generating embeddings...`;
+                        
+                        // Animate progress from current position to completion
+                        // This gives visual feedback during the actual processing
+                        const uploadCompleteProgress = baseProgress + (20 / total);
+                        progressBar.style.width = `${uploadCompleteProgress}%`;
+                        progressPercent.textContent = `${Math.round(uploadCompleteProgress)}%`;
+                        
+                        // Smoothly animate progress during processing
+                        const targetProgress = baseProgress + (100 / total);
+                        const startProgress = uploadCompleteProgress;
+                        const processingStartTime = Date.now();
+                        const minDuration = 500; // Minimum animation duration
+                        
+                        processingInterval = setInterval(() => {
+                            const elapsed = Date.now() - processingStartTime;
+                            // Animate smoothly, but don't complete until we have the response
+                            if (elapsed < minDuration) {
+                                const progress = elapsed / minDuration;
+                                const easeOut = 1 - Math.pow(1 - progress, 2);
+                                const currentProgress = startProgress + (targetProgress - startProgress) * easeOut * 0.8; // Stop at 80% until response
+                                progressBar.style.width = `${currentProgress}%`;
+                                progressPercent.textContent = `${Math.round(currentProgress)}%`;
+                            }
+                        }, 16); // ~60fps
+                        
+                        // Parse response immediately
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            if (processingInterval) {
+                                clearInterval(processingInterval);
+                            }
+                            
+                            // Set to completion for this file
+                            const fileProgress = ((uploaded + 1) / total) * 100;
+                            progressBar.style.width = `${fileProgress}%`;
+                            progressPercent.textContent = `${Math.round(fileProgress)}%`;
+                            progressStatus.textContent = `Completed ${file.name}`;
+                            progressDetails.textContent = `${result.chunk_count} chunks, ${result.total_tokens} tokens`;
+                            
+                            uploaded++;
+                            resolve(result);
+                        } catch (error) {
+                            if (processingInterval) {
+                                clearInterval(processingInterval);
+                            }
+                            reject(new Error('Failed to parse response'));
+                        }
+                    } else {
+                        if (processingInterval) {
+                            clearInterval(processingInterval);
+                        }
+                        try {
+                            const error = JSON.parse(xhr.responseText);
+                            reject(new Error(error.detail || 'Upload failed'));
+                        } catch {
+                            reject(new Error(`Upload failed with status ${xhr.status}`));
+                        }
+                    }
+                });
+                
+                xhr.addEventListener('error', () => {
+                    if (processingInterval) {
+                        clearInterval(processingInterval);
+                    }
+                    reject(new Error('Network error'));
+                });
+                
+                xhr.addEventListener('abort', () => {
+                    if (processingInterval) {
+                        clearInterval(processingInterval);
+                    }
+                });
+                
+                xhr.open('POST', '/documents');
+                xhr.send(fileFormData);
             });
-            
-            const result = await response.json();
-            
-            if (!response.ok) {
-                throw new Error(result.detail || 'Upload failed');
-            }
-            
-            uploaded++;
-            progressBar.style.width = `${(uploaded / total) * 100}%`;
         }
         
-        progressDiv.classList.add('hidden');
-        messageDiv.className = 'mt-4 p-4 bg-green-50 border border-green-200 rounded-md';
-        messageDiv.textContent = `Successfully uploaded ${uploaded} file(s)`;
-        messageDiv.classList.remove('hidden');
+        // All files processed
+        progressStatus.textContent = 'Complete!';
+        progressDetails.textContent = `Successfully processed ${uploaded} file(s)`;
+        progressBar.style.width = '100%';
+        progressPercent.textContent = '100%';
         
-        e.target.reset();
+        // Hide progress after a short delay and show success message
+        setTimeout(() => {
+            progressContainer.classList.add('hidden');
+            messageDiv.className = 'mt-4 p-4 bg-green-50 border border-green-200 rounded-md';
+            messageDiv.textContent = `Successfully uploaded and processed ${uploaded} file(s)`;
+            messageDiv.classList.remove('hidden');
+            
+            // Re-enable button
+            uploadButton.disabled = false;
+            uploadButtonText.textContent = 'Upload';
+            
+            e.target.reset();
+        }, 1000);
         
     } catch (error) {
-        progressDiv.classList.add('hidden');
+        progressContainer.classList.add('hidden');
         messageDiv.className = 'mt-4 p-4 bg-red-50 border border-red-200 rounded-md';
         messageDiv.textContent = `Error: ${error.message}`;
         messageDiv.classList.remove('hidden');
+        
+        // Re-enable button on error
+        uploadButton.disabled = false;
+        uploadButtonText.textContent = 'Upload';
     }
 });
 </script>
