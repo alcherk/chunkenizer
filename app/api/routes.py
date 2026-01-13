@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel
@@ -56,7 +56,7 @@ async def health_check(db: Session = Depends(get_db)):
     # Check SQLite
     sqlite_ok = False
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         sqlite_ok = True
         logger.debug("SQLite health check: OK")
     except Exception as e:
