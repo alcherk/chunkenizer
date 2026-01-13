@@ -307,26 +307,123 @@ async def delete_document(doc_id: str, db: Session = Depends(get_db)):
             logger.warning(f"Document not found for deletion: {doc_id}")
             raise HTTPException(status_code=404, detail="Document not found")
         
-        logger.info(f"Deleting document: {doc.name} (doc_id: {doc_id})")
+        logger.info(f"Deleting document: {doc.name} (doc_id: {doc_id}, chunks: {doc.chunk_count})")
         
-        # Delete from Qdrant
-        vectorstore = get_vectorstore()
-        logger.debug(f"Deleting vectors from Qdrant for document: {doc_id}")
-        vectorstore.delete_by_doc_id(doc_id)
-        logger.debug(f"Vectors deleted from Qdrant for document: {doc_id}")
+        # Delete from Qdrant first
+        qdrant_deleted = False
+        try:
+            vectorstore = get_vectorstore()
+            logger.debug(f"Deleting vectors from Qdrant for document: {doc_id}")
+            vectorstore.delete_by_doc_id(doc_id)
+            qdrant_deleted = True
+            logger.info(f"Successfully deleted {doc.chunk_count} chunks from Qdrant for document: {doc_id}")
+        except Exception as e:
+            logger.error(f"Error deleting vectors from Qdrant for document {doc_id}: {e}", exc_info=True)
+            # Continue with database deletion even if Qdrant deletion fails
+            # This prevents orphaned database records
         
         # Delete from database
-        db.delete(doc)
-        db.commit()
-        logger.info(f"Document deleted successfully: {doc_id}")
+        try:
+            db.delete(doc)
+            db.commit()
+            logger.info(f"Document deleted from database: {doc_id}")
+        except Exception as e:
+            logger.error(f"Error deleting document from database {doc_id}: {e}", exc_info=True)
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to delete document from database: {str(e)}")
         
-        return {"message": "Document deleted successfully", "document_id": doc_id}
+        if not qdrant_deleted:
+            logger.warning(f"Document {doc_id} deleted from database but Qdrant cleanup failed. Manual cleanup may be required.")
+            return {
+                "message": "Document deleted from database, but some chunks may remain in Qdrant",
+                "document_id": doc_id,
+                "warning": "Qdrant cleanup failed"
+            }
+        
+        logger.info(f"Document deleted successfully: {doc_id}")
+        return {"message": "Document and all chunks deleted successfully", "document_id": doc_id}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error deleting document {doc_id}: {e}", exc_info=True)
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeleteDocumentsRequest(BaseModel):
+    """Request model for deleting multiple documents."""
+    document_ids: List[str]
+
+
+@router.delete("/documents")
+async def delete_documents(
+    request: DeleteDocumentsRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Delete multiple documents and their vectors."""
+    logger.info(f"Bulk delete requested: {len(request.document_ids)} documents")
+    
+    if not request.document_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+    
+    deleted_docs = []
+    failed_docs = []
+    
+    for doc_id in request.document_ids:
+        try:
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if not doc:
+                logger.warning(f"Document not found for deletion: {doc_id}")
+                failed_docs.append({"doc_id": doc_id, "error": "Document not found"})
+                continue
+            
+            logger.info(f"Deleting document: {doc.name} (doc_id: {doc_id}, chunks: {doc.chunk_count})")
+            
+            # Delete from Qdrant first
+            qdrant_deleted = False
+            try:
+                vectorstore = get_vectorstore()
+                logger.debug(f"Deleting vectors from Qdrant for document: {doc_id}")
+                vectorstore.delete_by_doc_id(doc_id)
+                qdrant_deleted = True
+                logger.info(f"Successfully deleted {doc.chunk_count} chunks from Qdrant for document: {doc_id}")
+            except Exception as e:
+                logger.error(f"Error deleting vectors from Qdrant for document {doc_id}: {e}", exc_info=True)
+                # Continue with database deletion even if Qdrant deletion fails
+            
+            # Delete from database
+            try:
+                db.delete(doc)
+                db.commit()
+                logger.info(f"Document deleted from database: {doc_id}")
+                
+                deleted_docs.append({
+                    "doc_id": doc_id,
+                    "name": doc.name,
+                    "chunks_deleted": doc.chunk_count,
+                    "qdrant_cleaned": qdrant_deleted
+                })
+            except Exception as e:
+                logger.error(f"Error deleting document from database {doc_id}: {e}", exc_info=True)
+                db.rollback()
+                failed_docs.append({"doc_id": doc_id, "name": doc.name, "error": str(e)})
+        
+        except Exception as e:
+            logger.error(f"Unexpected error deleting document {doc_id}: {e}", exc_info=True)
+            failed_docs.append({"doc_id": doc_id, "error": str(e)})
+    
+    response = {
+        "message": f"Deleted {len(deleted_docs)} document(s)",
+        "deleted_count": len(deleted_docs),
+        "failed_count": len(failed_docs),
+        "deleted_documents": deleted_docs
+    }
+    
+    if failed_docs:
+        response["failed_documents"] = failed_docs
+        response["warning"] = f"Some documents failed to delete: {len(failed_docs)}"
+    
+    return response
 
 
 @router.get("/qdrant/stats")
@@ -521,5 +618,191 @@ async def get_qdrant_point(point_id: str, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         logger.error(f"Error getting Qdrant point {point_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DeletePointsRequest(BaseModel):
+    """Request model for deleting multiple points."""
+    point_ids: List[str]
+
+
+@router.delete("/qdrant/points")
+async def delete_qdrant_points(
+    request: DeletePointsRequest = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Delete multiple points from Qdrant and update document metadata."""
+    logger.info(f"Bulk delete requested: {len(request.point_ids)} points")
+    
+    if not request.point_ids:
+        raise HTTPException(status_code=400, detail="No point IDs provided")
+    
+    try:
+        vectorstore = get_vectorstore()
+        
+        # First, retrieve points to get their payloads (for doc_id mapping)
+        # We need this before deletion to update document metadata
+        points_to_delete = []
+        try:
+            result = vectorstore.client.retrieve(
+                collection_name=vectorstore.collection_name,
+                ids=request.point_ids,
+                with_payload=True,
+                with_vectors=False
+            )
+            points_to_delete = result
+        except Exception as e:
+            logger.warning(f"Could not retrieve some points before deletion: {e}")
+        
+        # Group points by doc_id for metadata updates
+        doc_points_map = {}  # {doc_id: [point_ids]}
+        for point in points_to_delete:
+            doc_id = point.payload.get("doc_id")
+            if doc_id:
+                if doc_id not in doc_points_map:
+                    doc_points_map[doc_id] = []
+                doc_points_map[doc_id].append({
+                    "point_id": str(point.id),
+                    "token_count": point.payload.get("token_count", 0)
+                })
+        
+        # Delete points from Qdrant
+        try:
+            vectorstore.delete_points(request.point_ids)
+            logger.info(f"Successfully deleted {len(request.point_ids)} points from Qdrant")
+        except Exception as e:
+            logger.error(f"Error deleting points from Qdrant: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to delete points: {str(e)}")
+        
+        # Update document metadata in SQLite
+        updated_docs = []
+        for doc_id, points_info in doc_points_map.items():
+            try:
+                doc = db.query(Document).filter(Document.id == doc_id).first()
+                if not doc:
+                    logger.warning(f"Document {doc_id} not found in database, skipping metadata update")
+                    continue
+                
+                # Get remaining chunks for this document from Qdrant
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                scroll_result = vectorstore.client.scroll(
+                    collection_name=vectorstore.collection_name,
+                    scroll_filter=Filter(
+                        must=[
+                            FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
+                        ]
+                    ),
+                    limit=10000,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                
+                remaining_points = scroll_result[0]
+                new_chunk_count = len(remaining_points)
+                new_total_tokens = sum(
+                    point.payload.get("token_count", 0) 
+                    for point in remaining_points
+                )
+                
+                # Update document record
+                doc.chunk_count = new_chunk_count
+                doc.total_tokens = new_total_tokens
+                doc.updated_at = datetime.utcnow()
+                
+                # If all chunks deleted, keep status as "ingested" (document still exists)
+                db.commit()
+                
+                updated_docs.append({
+                    "doc_id": doc_id,
+                    "name": doc.name,
+                    "new_chunk_count": new_chunk_count,
+                    "new_total_tokens": new_total_tokens
+                })
+                
+                logger.info(
+                    f"Updated document {doc_id}: {new_chunk_count} chunks, "
+                    f"{new_total_tokens} tokens (deleted {len(points_info)} chunks)"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error updating document {doc_id} metadata: {e}", exc_info=True)
+                # Continue with other documents even if one fails
+                db.rollback()
+        
+        return {
+            "message": "Points deleted successfully",
+            "deleted_count": len(request.point_ids),
+            "updated_documents": updated_docs,
+            "total_documents_updated": len(updated_docs)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting Qdrant points: {e}", exc_info=True)
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/qdrant/points/all")
+async def delete_all_qdrant_points(db: Session = Depends(get_db)):
+    """Delete all points from Qdrant collection and update document metadata."""
+    logger.warning("DELETE ALL POINTS requested - this will remove all vectors from Qdrant")
+    
+    try:
+        vectorstore = get_vectorstore()
+        
+        # Get count before deletion for logging
+        try:
+            count_result = vectorstore.client.count(collection_name=vectorstore.collection_name)
+            total_points = count_result.count
+            logger.info(f"Qdrant collection has {total_points} points before deletion")
+        except Exception as e:
+            logger.warning(f"Could not get point count before deletion: {e}")
+            total_points = 0
+        
+        # Delete all points
+        logger.info("Starting deletion of all points from Qdrant")
+        deleted_count = vectorstore.delete_all_points()
+        logger.warning(f"Deleted {deleted_count} points from Qdrant collection (expected {total_points})")
+        
+        # Verify deletion
+        try:
+            count_result_after = vectorstore.client.count(collection_name=vectorstore.collection_name)
+            remaining_points = count_result_after.count
+            if remaining_points > 0:
+                logger.warning(f"Warning: {remaining_points} points still remain in Qdrant after deletion attempt")
+        except Exception as e:
+            logger.warning(f"Could not verify deletion: {e}")
+        
+        # Update all documents to have 0 chunks and 0 tokens
+        try:
+            documents = db.query(Document).all()
+            updated_count = 0
+            for doc in documents:
+                doc.chunk_count = 0
+                doc.total_tokens = 0
+                doc.updated_at = datetime.utcnow()
+                updated_count += 1
+            
+            db.commit()
+            logger.info(f"Updated {updated_count} documents to have 0 chunks and 0 tokens")
+        except Exception as e:
+            logger.error(f"Error updating document metadata after deleting all points: {e}", exc_info=True)
+            db.rollback()
+            # Don't fail the request if metadata update fails, but log it
+        
+        return {
+            "message": "All points deleted from Qdrant successfully and document metadata updated",
+            "deleted_count": deleted_count,
+            "total_points_before": total_points,
+            "documents_updated": updated_count
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting all Qdrant points: {e}", exc_info=True)
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
